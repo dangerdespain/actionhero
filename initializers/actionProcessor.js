@@ -61,6 +61,21 @@ module.exports = {
         error = api.config.errors.invalidParams(self.validatorErrors);
       }
 
+      var filteredParamsPreprocessor = {}
+      for(var i in self.connection.params){
+        if(api.config.general.filteredParamsPreprocessor && api.config.general.filteredParamsPreprocessor.indexOf(i) >= 0){
+          filteredParamsPreprocessor[i] = '[FILTERED]';
+        }else{
+          filteredParamsPreprocessor[i] = self.connection.params[i];
+        }
+      }
+
+      api.log('[ action @ ' + self.connection.type + ' called ]', 'debug', {
+        to: self.connection.remoteIP,
+        action: self.connection.action,
+        rawParams: JSON.stringify(filteredParamsPreprocessor),
+      });
+
       if(error !== null){
         if(typeof error === 'string') self.connection.error = new Error( error );
         else self.connection.error = error;
@@ -108,7 +123,7 @@ module.exports = {
         }
       }
 
-      api.log('[ action @ ' + self.connection.type + ' ]', logLevel, {
+      api.log('[ action @ ' + self.connection.type + ' completed ]', logLevel, {
         to: self.connection.remoteIP,
         action: self.connection.action,
         params: JSON.stringify(filteredParams),
