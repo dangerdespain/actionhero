@@ -70,12 +70,6 @@ module.exports = {
         }
       }
 
-      api.log('[ action @ ' + self.connection.type + ' called ]', 'debug', {
-        to: self.connection.remoteIP,
-        action: self.connection.action,
-        rawParams: JSON.stringify(filteredParamsPreprocessor),
-      });
-
       if(error !== null){
         if(typeof error === 'string') self.connection.error = new Error( error );
         else self.connection.error = error;
@@ -123,15 +117,14 @@ module.exports = {
         }
       }
 
-      api.log('[ action @ ' + self.connection.type + ' completed ]', logLevel, {
-        to: self.connection.remoteIP,
-        action: self.connection.action,
-        params: JSON.stringify(filteredParams),
-        duration: self.duration,
-        error: stringifiedError
-      });
+      filteredParams.to = self.connection.remoteIP;
+      filteredParams.duration = self.duration
+      filteredParams.error = stringifiedError
 
-      self.working = false;
+      //os.cpuUsage(function(usage){
+      //  self.working = false;
+        api.log('[ action @ ' + self.connection.type + ' completed ]', logLevel, filteredParams);
+      //});
     }
 
     api.actionProcessor.prototype.preProcessAction = function(toProcess, callback){
