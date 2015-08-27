@@ -64,6 +64,10 @@ var initialize = function(api, options, next){
   }
 
   server.sendMessage = function(connection, message, messageCount){
+    if(message.error){
+      message.error = api.config.errors.serializers.servers.socket(message.error);
+    }
+
     if(connection.respondingTo){
       message.messageCount = messageCount;
       connection.respondingTo = null;
@@ -139,10 +143,10 @@ var initialize = function(api, options, next){
     });
   });
 
-  server.on('actionComplete', function(connection, toRender, messageCount){
-    if(toRender === true){
-      connection.response.context = 'response';
-      server.sendMessage(connection, connection.response, messageCount);
+  server.on('actionComplete', function(data){
+    if(data.toRender === true){
+      data.response.context = 'response';
+      server.sendMessage(data.connection, data.response, data.messageCount);
     }
   });
 

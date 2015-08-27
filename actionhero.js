@@ -19,6 +19,7 @@ var actionhero = function(){
 
 actionhero.prototype.initialize = function(params, callback){
   var self = this;
+  if(this._self){ self = this._self; }
 
   self.api._self = self;
   self.api.commands = {
@@ -70,10 +71,6 @@ actionhero.prototype.initialize = function(params, callback){
     self.initializers[initializer] = require(file);
     self.configInitializers.push( function(next){
       self.initializers[initializer].initialize(self.api, next);
-      self.api.watchFileAndAct(file, function(){
-        self.api.log('\r\n\r\n*** rebooting due to initializer change (' + file + ') ***\r\n\r\n', 'info');
-        self.api.commands.restart.call(self.api._self);
-      });
     } );
   });
 
@@ -195,6 +192,7 @@ actionhero.prototype.initialize = function(params, callback){
 
 actionhero.prototype.start = function(params, callback){
   var self = this;
+  if(this._self){ self = this._self; }
 
   if(!callback && typeof params === 'function'){
     callback = params; params = {};
@@ -227,6 +225,7 @@ actionhero.prototype.start = function(params, callback){
 
 actionhero.prototype.stop = function(callback){
   var self = this;
+  if(this._self){ self = this._self; }
 
   if(self.api.running === true){
     self.api.shuttingDown = true;
@@ -262,6 +261,7 @@ actionhero.prototype.stop = function(callback){
 
 actionhero.prototype.restart = function(callback){
   var self = this;
+  if(this._self){ self = this._self; }
 
   if(self.api.running === true){
     self.stop(function(err){
@@ -286,7 +286,7 @@ actionhero.prototype.restart = function(callback){
 var fatalError = function(api, errors, type){
   if(errors && !(errors instanceof Array)){ errors = [errors]; }
   if(errors){ 
-    api.log('Error with initilizer step: ' + type, 'emerg');
+    api.log('Error with initializer step: ' + type, 'emerg');
     errors.forEach(function(err){
       api.log(err.stack, 'emerg');
     });

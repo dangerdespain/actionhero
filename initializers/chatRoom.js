@@ -11,30 +11,25 @@ module.exports = {
       members: 'actionhero:chatRoom:members:',
     }
     api.chatRoom.messageChannel     = '/actionhero/chat/chat';
-    api.chatRoom.joinCallbacks      = {};
-    api.chatRoom.leaveCallbacks     = {};
-    api.chatRoom.sayCallbacks       = {};
 
-    api.chatRoom.addJoinCallback = function(func, priority){
-      if(!priority) priority = api.config.general.defaultMiddlewarePriority;
-      priority = Number(priority); // ensure priority is numeric
-      if(!api.chatRoom.joinCallbacks[priority]) api.chatRoom.joinCallbacks[priority] = [];
-      return api.chatRoom.joinCallbacks[priority].push(func);
-    }
+    api.chatRoom.middleware = {};
+    api.chatRoom.globalMiddleware = [];
 
-    api.chatRoom.addLeaveCallback = function(func, priority){
-      if(!priority) priority = api.config.general.defaultMiddlewarePriority;
-      priority = Number(priority); // ensure priority is numeric
-      if(!api.chatRoom.leaveCallbacks[priority]) api.chatRoom.leaveCallbacks[priority] = [];
-      return api.chatRoom.leaveCallbacks[priority].push(func);
-    }
+    api.chatRoom.addMiddleware = function(data){
+      if(!data.name){ throw new Error('middleware.name is required'); }
+      if(!data.priority){ data.priority = api.config.general.defaultMiddlewarePriority; }
+      data.priority = Number(data.priority);
+      api.chatRoom.middleware[data.name] = data;
 
-    api.chatRoom.addSayCallback = function(func, priority){
-      if(!priority) priority = api.config.general.defaultMiddlewarePriority;
-      priority = Number(priority); // ensure priority is numeric
-      if(!api.chatRoom.sayCallbacks[priority]) api.chatRoom.sayCallbacks[priority] = [];
-      return api.chatRoom.sayCallbacks[priority].push(func);
-    }
+      api.chatRoom.globalMiddleware.push(data.name);
+      api.chatRoom.globalMiddleware.sort(function(a,b){
+        if(api.chatRoom.middleware[a].priority > api.chatRoom.middleware[b].priority){
+          return 1;
+        }else{
+          return -1;
+        }
+      });
+    };
 
     api.chatRoom.broadcast = function(connection, room, message, callback){
       if(!room || room.length === 0 || message === null || message.length === 0){
@@ -54,8 +49,26 @@ module.exports = {
             room: room
           }
         };
-        api.redis.publish(payload);
-        if(typeof callback === 'function'){ process.nextTick(function(){ callback(null); }) }
+        var messagePayload = api.chatRoom.generateMessagePayload(payload);
+        api.chatRoom.handleCallbacks(connection, messagePayload.room, 'onSayReceive', messagePayload, function(err, newPayload){
+          if(err){
+            if(typeof callback === 'function'){ process.nextTick(function(){ callback(err); }) }
+          } else {
+            var payloadToSend = {
+              messageType: 'chat',
+              serverToken: api.config.general.serverToken,
+              serverId: api.id,
+              message: newPayload.message,
+              sentAt: newPayload.sentAt,
+              connection: {
+                id: newPayload.from,
+                room: newPayload.room
+              }
+            };
+            api.redis.publish(payloadToSend);
+            if(typeof callback === 'function'){ process.nextTick(function(){ callback(null); }) }
+          }
+        });
       } else {
         if(typeof callback === 'function'){ process.nextTick(function(){ callback( api.config.errors.connectionNotInRoom(room) ); }) }
       }
@@ -75,15 +88,16 @@ module.exports = {
       api.stats.increment('chatRoom:messagesReceived');
       var messagePayload = api.chatRoom.generateMessagePayload(message);
       for(var i in api.connections.connections){
-        var thisConnection = api.connections.connections[i];
-        if(thisConnection.canChat === true){
-          if(thisConnection.rooms.indexOf(messagePayload.room) > -1){
-            if(message.connection === undefined || thisConnection.id !== messagePayload.from){
-              api.chatRoom.handleCallbacks(thisConnection, messagePayload.room, 'say', messagePayload, function(err, newMessagePaylaod){
-                if(!err){ thisConnection.sendMessage(newMessagePaylaod, 'say'); }
-              });
-            }
-          }
+        api.chatRoom.incomingMessagePerConnection(api.connections.connections[i], messagePayload);
+      }
+    }
+
+    api.chatRoom.incomingMessagePerConnection = function(connection, messagePayload){
+      if(connection.canChat === true){
+        if(connection.rooms.indexOf(messagePayload.room) > -1){
+          api.chatRoom.handleCallbacks(connection, messagePayload.room, 'say', messagePayload, function(err, newMessagePayload){
+            if(!err){ connection.sendMessage(newMessagePayload, 'say'); }
+          });
         }
       }
     }
@@ -236,44 +250,32 @@ module.exports = {
     }
 
     api.chatRoom.handleCallbacks = function(connection, room, direction, messagePayload, next){
-      var collecton;
-      var orderedCallbacks = [];
-      var newMessagePaylaod = messagePayload;
+      var jobs = [];
+      var newMessagePayload;
+      if(messagePayload){ newMessagePayload = api.utils.objClone( messagePayload ); }
 
-      if(direction === 'join'){
-        collecton = api.chatRoom.joinCallbacks;
-      } else if(direction === 'leave' ) {
-        collecton = api.chatRoom.leaveCallbacks;
-      } else if(direction === 'say' ) {
-        collecton = api.chatRoom.sayCallbacks;
-      }
-      
-      var priorities = [];
-      for(var c in collecton){ priorities.push(c); }
-      priorities.forEach(function(priority){
-        collecton[priority].forEach(function(c){
-          if(messagePayload){
-            orderedCallbacks.push( function(callback){
-              c(connection, room, newMessagePaylaod, function(err, data){
-                if(data){ newMessagePaylaod = data; }
+      api.chatRoom.globalMiddleware.forEach(function(name){
+        var m = api.chatRoom.middleware[name]
+        if(typeof m[direction] === 'function' ){
+          jobs.push( function(callback){
+            if(messagePayload){
+              m[direction](connection, room, newMessagePayload, function(err, data){
+                if(data){ newMessagePayload = data; }
                 callback(err, data)
               });
-            }); 
-          }else{
-            orderedCallbacks.push( function(callback){
-              c(connection, room, callback);
-            });
-          }
-        });
+            }else{
+              m[direction](connection, room, callback);
+            }
+          });         
+        }
       });
 
-      async.series(orderedCallbacks, function(err, data){
-        
+      async.series(jobs, function(err, data){
         while(data.length > 0){
           var thisData = data.shift();
-          if(thisData){ newMessagePaylaod = thisData; }
+          if(thisData){ newMessagePayload = thisData; }
         }
-        next(err, newMessagePaylaod)
+        next(err, newMessagePayload)
       });
     }
 

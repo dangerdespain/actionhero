@@ -10,7 +10,6 @@ exports.default = {
       logger.transports.push(function(api, winston){
         return new (winston.transports.Console)({
           colorize: true,
-          // level: 'debug',
           level: 'info',
           timestamp: api.utils.sqlDateTime
         });
@@ -32,6 +31,9 @@ exports.default = {
         timestamp: true
       });
     });
+
+    // the maximum length of param to log (we will truncate)
+    logger.maxLogStringLength = 100;
 
     return logger;
   }

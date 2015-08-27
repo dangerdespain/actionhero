@@ -72,6 +72,19 @@ ActionheroClient.prototype.connect = function(callback){
     self.emit('disconnected');
   });
 
+  self.client.on('timeout', function(){
+    self.state = 'timeout';
+    self.emit('timeout');
+  });
+
+  self.client.on('close', function(){
+    self.messageCount = 0;
+    if(self.state !== 'disconnected'){
+      self.state = 'disconnected';
+      self.emit('disconnected');
+    }
+  });
+
   self.client.on('end', function(){
     self.messageCount = 0;
     if(self.state !== 'disconnected'){
@@ -153,30 +166,31 @@ ActionheroClient.prototype.action = function(action, params, callback){
   }
 }
 
-ActionheroClient.prototype.actionWeb = function(params, callback){
+ActionheroClient.prototype.actionWeb = function(params, callback) {
   var xmlhttp = new XMLHttpRequest();
-  xmlhttp.onreadystatechange = function(){
-    if(xmlhttp.readyState === 4){
-      if(xmlhttp.status === 200){
-        var response = JSON.parse(xmlhttp.responseText);
-        callback(null, response);
+  xmlhttp.onreadystatechange = function () {
+    var response;
+    if(xmlhttp.readyState === 4) {
+      if(xmlhttp.status === 200) {
+        response = JSON.parse(xmlhttp.responseText);
       }else{
-        callback(xmlhttp.statusText, xmlhttp.responseText);
+        try{
+          response = JSON.parse(xmlhttp.responseText);
+        }catch(e){
+          response = { error: {statusText: xmlhttp.statusText, responseText: xmlhttp.responseText} };
+        }
       }
+      callback(response);
     }
-  }
-  var qs = '?';
-  for(var i in params){
-    qs += i + '=' + params[i] + '&';
-  }
-  var method = 'GET';
-  if(params.httpMethod){
-    method = params.httpMethod;
-  }
-  var url = this.options.url + this.options.apiPath + qs;
+  };
+  
+  var method = params.httpMethod || 'POST';
+  var url = this.options.url + this.options.apiPath + '?action=' + params.action;
   xmlhttp.open(method, url, true);
-  xmlhttp.send();
+  xmlhttp.setRequestHeader('Content-Type', 'application/json');
+  xmlhttp.send(JSON.stringify(params)); 
 }
+
 
 ActionheroClient.prototype.actionWebSocket = function(params, callback){
   this.send({event: 'action',params: params}, callback);
@@ -205,7 +219,7 @@ ActionheroClient.prototype.roomView = function(room, callback){
 ActionheroClient.prototype.roomAdd = function(room, callback){
   var self = this;
   self.send({event: 'roomAdd', room: room}, function(data){
-    self.configure(function(details){
+    self.configure(function(){
       if(typeof callback === 'function'){ callback(data); }
     });
   });
@@ -216,7 +230,7 @@ ActionheroClient.prototype.roomLeave = function(room, callback){
   var index = self.rooms.indexOf(room);
   if(index > -1){ self.rooms.splice(index, 1); }
   this.send({event: 'roomLeave', room: room}, function(data){
-    self.configure(function(details){
+    self.configure(function(){
       if(typeof callback === 'function'){ callback(data); }
     });
   });

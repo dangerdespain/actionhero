@@ -7,7 +7,11 @@ exports.start = function(binary, next){
   // var actionheroPrototype = require('./../../actionhero.js').actionheroPrototype;
   var actionhero = new ActionheroPrototype();
   // number of ms to wait to do a forcible shutdown if actionhero won't stop gracefully
-  var shutdownTimeout = process.env.ACTIONHERO_SHUTDOWN_TIMEOUT || 1000 * 30 
+  var shutdownTimeout = 1000 * 30;
+  if(process.env.ACTIONHERO_SHUTDOWN_TIMEOUT){
+    shutdownTimeout = parseInt(process.env.ACTIONHERO_SHUTDOWN_TIMEOUT)
+  }
+
   var api = {};
   var state;
 
@@ -22,6 +26,7 @@ exports.start = function(binary, next){
         state = 'started';
         if(cluster.isWorker){ process.send(state); }
         api = apiFromCallback;
+        checkForInernalStop();
         if(typeof next === 'function'){
           next(api);
         }
@@ -61,6 +66,15 @@ exports.start = function(binary, next){
         process.exit();
       });
     });
+  }
+
+  var checkForInernalStopTimer;
+  var checkForInernalStop = function(){
+    clearTimeout(checkForInernalStopTimer);
+    if(actionhero.api.running !== true){
+      process.exit(0);
+    }
+    checkForInernalStopTimer = setTimeout(checkForInernalStop, shutdownTimeout);
   }
 
   if(cluster.isWorker){
