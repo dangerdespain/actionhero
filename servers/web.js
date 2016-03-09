@@ -1,11 +1,14 @@
 var url                 = require('url');
+var qs                  = require('qs');
 var fs                  = require('fs');
 var path                = require('path');
+var zlib                = require('zlib');
 var formidable          = require('formidable');
 var browser_fingerprint = require('browser_fingerprint');
 var Mime                = require('mime');
+var uuid                = require('node-uuid');
 
-var web = function(api, options, next){
+var initialize = function(api, options, next){
 
   //////////
   // INIT //
@@ -25,16 +28,14 @@ var web = function(api, options, next){
   var server = new api.genericServer(type, options, attributes);
 
   if(['api', 'file'].indexOf(api.config.servers.web.rootEndpointType) < 0){
-    server.log('api.config.servers.web.rootEndpointType can only be \'api\' or \'file\'', 'emerg');
-    process.exit();
+    throw new Error('api.config.servers.web.rootEndpointType can only be \'api\' or \'file\'');
   }
-
 
   //////////////////////
   // REQUIRED METHODS //
   //////////////////////
 
-  server._start = function(next){
+  server.start = function(next){
     if(options.secure === false){
       var http = require('http');
       server.server = http.createServer(function(req, res){
@@ -50,7 +51,7 @@ var web = function(api, options, next){
     var bootAttempts = 0
     server.server.on('error', function(e){
       bootAttempts++;
-      if(bootAttempts < 5){
+      if(bootAttempts < api.config.servers.web.bootAttempts){
         server.log('cannot boot web server; trying again [' + String(e) + ']', 'error');
         if(bootAttempts === 1){ cleanSocket(options.bindIP, options.port); }
         setTimeout(function(){
@@ -58,19 +59,17 @@ var web = function(api, options, next){
           server.server.listen(options.port, options.bindIP);
         }, 1000)
       }else{
-        server.log('cannot start web server @ ' + options.bindIP + ':' + options.port + '; exiting.', 'emerg');
-        server.log(e, 'error');
-        process.exit(1);
+        return next(new Error('cannot start web server @ ' + options.bindIP + ':' + options.port + ' => ' + e.message));
       }
     });
 
     server.server.listen(options.port, options.bindIP, function(){
       chmodSocket(options.bindIP, options.port);
-      next(server);
+      next();
     });
   }
 
-  server._stop = function(next){
+  server.stop = function(next){
     server.server.close();
     process.nextTick(function(){
       next();
@@ -82,48 +81,102 @@ var web = function(api, options, next){
     if(connection.rawConnection.method !== 'HEAD'){
       stringResponse = String(message);
     }
-    connection.rawConnection.responseHeaders.push(['Content-Length', Buffer.byteLength(stringResponse, 'utf8')]);
+
     cleanHeaders(connection);
     var headers = connection.rawConnection.responseHeaders;
     var responseHttpCode = parseInt(connection.rawConnection.responseHttpCode);
-    connection.rawConnection.res.writeHead(responseHttpCode, headers);
-    connection.rawConnection.res.end(stringResponse);
-    connection.destroy();
+
+    server.sendWithCompression(connection, responseHttpCode, headers, stringResponse);
   }
 
-  server.sendFile = function(connection, error, fileStream, mime, length){
+  server.sendFile = function(connection, error, fileStream, mime, length, lastModified){
     var foundExpires = false;
     var foundCacheControl = false;
-
+    var ifModifiedSince;
+    var reqHeaders;
     connection.rawConnection.responseHeaders.forEach(function(pair){
       if( pair[0].toLowerCase() === 'expires' )      { foundExpires = true; }
       if( pair[0].toLowerCase() === 'cache-control' ){ foundCacheControl = true; }
     })
 
+    reqHeaders = connection.rawConnection.req.headers;
+    if(reqHeaders['if-modified-since']){ifModifiedSince = new Date(reqHeaders['if-modified-since'])}
+
     connection.rawConnection.responseHeaders.push(['Content-Type', mime]);
-    connection.rawConnection.responseHeaders.push(['Content-Length', length]);
     if(foundExpires === false)      { connection.rawConnection.responseHeaders.push(['Expires', new Date(new Date().getTime() + api.config.servers.web.flatFileCacheDuration * 1000).toUTCString()]); }
-    if(foundCacheControl === false) { connection.rawConnection.responseHeaders.push(['Cache-Control', 'max-age=' + api.config.servers.web.flatFileCacheDuration + ', must-revalidate']); }
-    
+    if(foundCacheControl === false) { connection.rawConnection.responseHeaders.push(['Cache-Control', 'max-age=' + api.config.servers.web.flatFileCacheDuration + ', must-revalidate, public']); }
+
+    connection.rawConnection.responseHeaders.push(['Last-Modified',new Date(lastModified)]);
     cleanHeaders(connection);
     var headers = connection.rawConnection.responseHeaders;
     if(error){ connection.rawConnection.responseHttpCode = 404 }
+    if(ifModifiedSince && lastModified <= ifModifiedSince){connection.rawConnection.responseHttpCode = 304}
     var responseHttpCode = parseInt(connection.rawConnection.responseHttpCode);
-    connection.rawConnection.res.writeHead(responseHttpCode, headers);
     if(error){
-      connection.rawConnection.res.end(String(error));
-      connection.destroy();
+      server.sendWithCompression(connection, responseHttpCode, headers, String(error));
+    }
+    else if(responseHttpCode !== 304){
+      server.sendWithCompression(connection, responseHttpCode, headers, null, fileStream, length);
     } else {
-      fileStream.pipe(connection.rawConnection.res);
-      fileStream.on('end', function(){
-        connection.destroy();
-      });
+      connection.rawConnection.res.writeHead(responseHttpCode, headers);
+      connection.rawConnection.res.end();
+      connection.destroy();
     }
   };
 
-  server.goodbye = function(connection){
+  server.sendWithCompression = function(connection, responseHttpCode, headers, stringResponse, fileStream, fileLength){
+    var acceptEncoding = connection.rawConnection.req.headers['accept-encoding'];
+    var compressor, stringEncoder;
+    if(!acceptEncoding){ acceptEncoding = ''; }
+
+    // Note: this is not a conformant accept-encoding parser.
+    // https://nodejs.org/api/zlib.html#zlib_zlib_createinflate_options
+    // See http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.3
+    if(api.config.servers.web.compress === true){
+      if(acceptEncoding.match(/\bdeflate\b/)) {
+        headers.push(['Content-Encoding', 'deflate']);
+        compressor = zlib.createDeflate();
+        stringEncoder = zlib.deflate;
+      }else if(acceptEncoding.match(/\bgzip\b/)){
+        headers.push(['Content-Encoding', 'gzip']);
+        compressor = zlib.createGzip();
+        stringEncoder = zlib.gzip;
+      }
+    }
+
+    // note: the 'end' event may not fire on some OSes; finish will
+    connection.rawConnection.res.on('finish', function(){
+      connection.destroy();
+    });
+
+    if(fileStream){
+      if(compressor){
+        // headers.push(['Content-Length', fileLength]); // TODO
+        connection.rawConnection.res.writeHead(responseHttpCode, headers);
+        fileStream.pipe(compressor).pipe(connection.rawConnection.res);
+      }else{
+        headers.push(['Content-Length', fileLength]);
+        connection.rawConnection.res.writeHead(responseHttpCode, headers);
+        fileStream.pipe(connection.rawConnection.res);
+      }
+    }else{
+      if(stringEncoder){
+        stringEncoder(stringResponse, function(error, zippedString){
+          headers.push(['Content-Length', zippedString.length]);
+          connection.rawConnection.res.writeHead(responseHttpCode, headers);
+          connection.rawConnection.res.end(zippedString);
+        });
+      }else{
+        headers.push(['Content-Length', Buffer.byteLength(stringResponse)]);
+        connection.rawConnection.res.writeHead(responseHttpCode, headers);
+        connection.rawConnection.res.end(stringResponse);
+      }
+    }
+  };
+
+  server.goodbye = function(){
     // disconnect handlers
-  }
+  };
 
   ////////////
   // EVENTS //
@@ -143,8 +196,8 @@ var web = function(api, options, next){
     });
   });
 
-  server.on('actionComplete', function(connection, toRender, messageCount){
-    completeResponse(connection, toRender, messageCount);
+  server.on('actionComplete', function(data){
+    completeResponse(data);
   });
 
   /////////////
@@ -212,7 +265,7 @@ var web = function(api, options, next){
           responseHttpCode: responseHttpCode,
           parsedURL: parsedURL
         },
-        id: fingerprint + '-' + api.utils.randomString(16),
+        id: fingerprint + '-' + uuid.v4(),
         fingerprint: fingerprint,
         remoteAddress: remoteIP,
         remotePort: remotePort
@@ -220,59 +273,63 @@ var web = function(api, options, next){
     });
   }
 
-  var completeResponse = function(connection, toRender){
-    if(toRender === true){
+  var completeResponse = function(data){
+    if(data.toRender === true){
       if(api.config.servers.web.metadataOptions.serverInformation){
         var stopTime = new Date().getTime();
-        connection.response.serverInformation = {
+        data.response.serverInformation = {
           serverName:      api.config.general.serverName,
           apiVersion:      api.config.general.apiVersion,
-          requestDuration: (stopTime - connection.connectedAt),
+          requestDuration: (stopTime - data.connection.connectedAt),
           currentTime:     stopTime
         };
       }
 
       if(api.config.servers.web.metadataOptions.requesterInformation){
-        connection.response.requesterInformation = buildRequesterInformation(connection);
+        data.response.requesterInformation = buildRequesterInformation(data.connection);
       }
 
-      if(connection.response.error !== undefined){
-        if(api.config.servers.web.returnErrorCodes === true && connection.rawConnection.responseHttpCode === 200){
-          if(connection.actionStatus === 'unknown_action'){
-            connection.rawConnection.responseHttpCode = 404;
-          }else if(connection.actionStatus === 'missing_params'){
-            connection.rawConnection.responseHttpCode = 422;
-          }else if(connection.actionStatus === 'server_error'){
-            connection.rawConnection.responseHttpCode = 500;
+      if(data.response.error){
+        if(api.config.servers.web.returnErrorCodes === true && data.connection.rawConnection.responseHttpCode === 200){
+          if(data.actionStatus === 'unknown_action'){
+            data.connection.rawConnection.responseHttpCode = 404;
+          }else if(data.actionStatus === 'missing_params'){
+            data.connection.rawConnection.responseHttpCode = 422;
+          }else if(data.actionStatus === 'server_error'){
+            data.connection.rawConnection.responseHttpCode = 500;
           }else{
-            connection.rawConnection.responseHttpCode = 400;
+            data.connection.rawConnection.responseHttpCode = 400;
           }
         }
       }
 
       if(
-          (connection.response.error === null || connection.response.error === undefined ) &&
-          connection.action &&
-          connection.params.apiVersion &&
-          api.actions.actions[connection.action][connection.params.apiVersion].matchExtensionMimeType === true &&
-          connection.extension
+          !data.response.error &&
+          data.action &&
+          data.params.apiVersion &&
+          api.actions.actions[data.params.action][data.params.apiVersion].matchExtensionMimeType === true &&
+          data.connection.extension
         ){
-          connection.rawConnection.responseHeaders.push(['Content-Type', Mime.lookup(connection.extension)]);
+          data.connection.rawConnection.responseHeaders.push(['Content-Type', Mime.lookup(data.connection.extension)]);
+      }
+
+      if(data.response.error){
+        data.response.error = api.config.errors.serializers.servers.web(data.response.error);
       }
 
       var stringResponse = '';
 
-      if( extractHeader(connection, 'Content-Type').match(/json/) ){
-        stringResponse = JSON.stringify(connection.response, null, api.config.servers.web.padding);
-        if(connection.params.callback){
-          connection.rawConnection.responseHeaders.push(['Content-Type', 'application/javascript']);
-          stringResponse = connection.params.callback + '(' + stringResponse + ');';
+      if( extractHeader(data.connection, 'Content-Type').match(/json/) ){
+        stringResponse = JSON.stringify(data.response, null, api.config.servers.web.padding);
+        if(data.params.callback){
+          data.connection.rawConnection.responseHeaders.push(['Content-Type', 'application/javascript']);
+          stringResponse = data.connection.params.callback + '(' + stringResponse + ');';
         }
       }else{
-        stringResponse = connection.response;
+        stringResponse = data.response;
       }
 
-      server.sendMessage(connection, stringResponse);
+      server.sendMessage(data.connection, stringResponse);
     }
   }
 
@@ -344,15 +401,15 @@ var web = function(api, options, next){
     // API
     else if(requestMode === 'api'){
       if(connection.rawConnection.method === 'TRACE'){ requestMode = 'trace'; }
-
-      fillParamsFromWebRequest(connection, connection.rawConnection.parsedURL.query);
-      connection.rawConnection.params.query = connection.rawConnection.parsedURL.query;        
+      var search = connection.rawConnection.parsedURL.search.slice(1);
+      fillParamsFromWebRequest(connection, qs.parse(search, api.config.servers.web.queryParseOptions));
+      connection.rawConnection.params.query = connection.rawConnection.parsedURL.query;
       if(
           connection.rawConnection.method !== 'GET' &&
-          connection.rawConnection.method !== 'HEAD' && 
-          ( 
+          connection.rawConnection.method !== 'HEAD' &&
+          (
             connection.rawConnection.req.headers['content-type'] ||
-            connection.rawConnection.req.headers['Content-Type']  
+            connection.rawConnection.req.headers['Content-Type']
           )
       ){
         connection.rawConnection.form = new formidable.IncomingForm();
@@ -389,6 +446,12 @@ var web = function(api, options, next){
       if(connection.params.file === '' || connection.params.file[connection.params.file.length - 1] === '/'){
         connection.params.file = connection.params.file + api.config.general.directoryFileType;
       }
+      try {
+        connection.params.file = decodeURIComponent(connection.params.file);
+      }
+      catch(e) {
+        connection.error = new Error('There was an error decoding URI: ' + e);
+      }
       callback(requestMode);
     }
 
@@ -400,7 +463,7 @@ var web = function(api, options, next){
     if(collapsedVarsHash !== false){
       varsHash = {payload: collapsedVarsHash} // post was an array, lets call it "payload"
     }
-    
+
     for(var v in varsHash){
       connection.params[v] = varsHash[v];
     }
@@ -451,13 +514,13 @@ var web = function(api, options, next){
           server.log('removed stale unix socket @ ' + port);
         }
       });
-    } 
+    }
   }
 
   var chmodSocket = function(bindIP, port){
-    if(!options.bindIP && options.port.indexOf('/') >= 0){ 
-      fs.chmodSync(port, 0777); 
-    } 
+    if(!options.bindIP && options.port.indexOf('/') >= 0){
+      fs.chmodSync(port, 0777);
+    }
   }
 
   next(server);
@@ -465,4 +528,4 @@ var web = function(api, options, next){
 
 /////////////////////////////////////////////////////////////////////
 // exports
-exports.web = web;
+exports.initialize = initialize;

@@ -8,16 +8,15 @@ var originalFile =    './actions/randomNumber.js';
 var originalContent = fs.readFileSync(originalFile);
 
 var newFileContent = '';
-newFileContent += 'var action = {};';
-newFileContent += 'action.name = \'randomNumber\';';
-newFileContent += 'action.description = \'HACK\';';
-newFileContent += 'action.inputs = { \'required\' : [], \'optional\' : [] };';
-newFileContent += 'action.outputExample = {randomNumber: 123};';
-newFileContent += 'action.run = function(api, connection, next){';
-newFileContent += '  connection.response.randomNumber = \'not a number!\';';
-newFileContent += '  next(connection, true);';
+newFileContent += 'exports.randomNumber = {';
+newFileContent += '  name: "randomNumber",';
+newFileContent += '  description: "HACK",';
+newFileContent += '  outputExample: {},';
+newFileContent += '  run: function(api, connection, next){';
+newFileContent += '    connection.response.randomNumber = "not a number!";';
+newFileContent += '    next(connection, true);';
+newFileContent += '  }';
 newFileContent += '};';
-newFileContent += 'exports.action = action;';
 
 describe('Core: Developer Mode', function(){
 
@@ -26,8 +25,8 @@ describe('Core: Developer Mode', function(){
       api = a;
       setTimeout(function(){
         done();
-      }, 1001) // allow the file to get stat-ed once in the original state
-    })
+      }, 1001); // allow the file to get stat-ed once in the original state
+    });
   });
 
   after(function(done){

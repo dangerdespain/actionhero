@@ -22,7 +22,7 @@ var configChanges = {
     general: {id: 'test-server-3'},
     servers: {}
   }
-}
+};
 
 var startAllServers = function(next){
   actionhero1.start({configChanges: configChanges[1]}, function(err, a1){
@@ -35,7 +35,7 @@ var startAllServers = function(next){
       });
     });
   });
-}
+};
 
 var stopAllServers = function(next){
   actionhero1.stop(function(){
@@ -45,7 +45,7 @@ var stopAllServers = function(next){
       });
     });
   });
-}
+};
 
 describe('Core: Action Cluster', function(){
 
@@ -55,7 +55,7 @@ describe('Core: Action Cluster', function(){
       startAllServers(function(){
         done();
       });
-    })
+    });
 
     after(function(done){
       stopAllServers(function(){
@@ -137,7 +137,7 @@ describe('Core: Action Cluster', function(){
           apiB.cache.load('test_key', function(err, value){
             value.should.equal('yay');
             done();
-          })
+          });
         });
       });
 
@@ -146,7 +146,7 @@ describe('Core: Action Cluster', function(){
           apiA.cache.load('test_key', function(err, value){
             should.not.exist(value);
             done();
-          })
+          });
         });
       });
 
@@ -159,20 +159,20 @@ describe('Core: Action Cluster', function(){
         delete apiB.rpcTestMethod;
         delete apiC.rpcTestMethod;
         done();
-      })
+      });
 
       it('can call remote methods on all other servers in the cluster', function(done){
         var data = {};
 
         apiA.rpcTestMethod = function(arg1, arg2, next){
           data[1] = [arg1, arg2]; next();
-        }
+        };
         apiB.rpcTestMethod = function(arg1, arg2, next){
           data[2] = [arg1, arg2]; next();
-        }
+        };
         apiC.rpcTestMethod = function(arg1, arg2, next){
           data[3] = [arg1, arg2]; next();
-        }
+        };
 
         apiA.redis.doCluster('api.rpcTestMethod', ['arg1', 'arg2'], null, function(err){
           should.not.exist(err);
@@ -193,13 +193,13 @@ describe('Core: Action Cluster', function(){
         var data = {};
         apiA.rpcTestMethod = function(arg1, arg2, next){
           data[1] = [arg1, arg2]; next();
-        }
+        };
         apiB.rpcTestMethod = function(arg1, arg2, next){
           throw new Error('should not be here');
-        }
+        };
         apiC.rpcTestMethod = function(arg1, arg2, next){
           throw new Error('should not be here');
-        }
+        };
 
         apiB.redis.doCluster('api.rpcTestMethod', ['arg1', 'arg2'], client.id, function(err){
           should.not.exist(err);
@@ -233,6 +233,17 @@ describe('Core: Action Cluster', function(){
         });
       });
 
+      it('can send arbitraty messages to connections connected to other servers', function(done){
+        var client = new apiA.specHelper.connection();
+
+        apiB.connections.apply(client.id, 'sendMessage', {message: 'hi'}, function(connection){
+          var message = connection.messages[( connection.messages.length - 1 )];
+          message.message.should.equal('hi');
+
+          done();
+        });
+      });
+
       it('failing RPC calls with a callback will have a failure callback', function(done){
         this.timeout(apiA.config.redis.rpcTimeout * 2);
 
@@ -255,14 +266,14 @@ describe('Core: Action Cluster', function(){
       it('can check if rooms exist', function(done){
         apiA.chatRoom.exists('defaultRoom', function(err, found){
           found.should.equal(true);
-          done()
+          done();
         });
       });
 
       it('can check if a room does not exist', function(done){
         apiA.chatRoom.exists('missingRoom', function(err, found){
           found.should.equal(false);
-          done()
+          done();
         });
       });
 
@@ -315,7 +326,7 @@ describe('Core: Action Cluster', function(){
         apiA.chatRoom.addMember(client.id, 'defaultRoom', function(err, didAdd){
           didAdd.should.equal(true);
           apiA.chatRoom.addMember(client.id, 'defaultRoom', function(err, didAdd){
-            err.should.equal('connection already in this room');
+            err.should.equal('connection already in this room (defaultRoom)');
             didAdd.should.equal(false);
             client.destroy();
             done();
@@ -333,34 +344,6 @@ describe('Core: Action Cluster', function(){
           done();
         });
       });
-
-      it('can add authorized members to secure rooms', function(done){
-        var client = new apiA.specHelper.connection();
-        apiA.chatRoom.add('newRoom', function(err){
-          apiA.chatRoom.setAuthenticationPattern('newRoom', 'auth', true, function(err){
-            client.auth = true;
-            apiA.chatRoom.addMember(client.id, 'newRoom', function(err, didAdd){
-              didAdd.should.equal(true);
-              client.destroy();
-              done();
-            });
-          });
-        });
-      });
-
-      it('will not add a member with bad auth to a secure room', function(done){
-        var client = new apiA.specHelper.connection();
-        apiA.chatRoom.add('newRoom', function(err){
-          apiA.chatRoom.setAuthenticationPattern('newRoom', 'auth', true, function(err){
-            client.auth = false;
-            apiA.chatRoom.addMember(client.id, 'newRoom', function(err, didAdd){
-              didAdd.should.equal(false);
-              client.destroy();
-              done();
-            });
-          });
-        });
-      })
 
       it('server will not remove a member not in a room', function(done){
         var client = new apiA.specHelper.connection();
@@ -394,7 +377,7 @@ describe('Core: Action Cluster', function(){
           });
         });
       });
-      
+
       it('server can destroy a room and connections will be removed', function(done){
         var client = new apiA.specHelper.connection();
         apiA.chatRoom.add('newRoom', function(err){
@@ -422,64 +405,229 @@ describe('Core: Action Cluster', function(){
             data.membersCount.should.equal(1);
             client.destroy();
             done();
-          });            
-        });
-      })
-
-      it('can authorize clients against rooms PASSING', function(done){
-        var client = new apiA.specHelper.connection();
-        client.auth = true;
-        apiA.chatRoom.add('newRoom', function(err){
-          apiA.chatRoom.setAuthenticationPattern('newRoom', 'auth', true, function(err){
-            apiA.chatRoom.authorize(client, 'newRoom', function(err, authed){
-              should.not.exist(err);
-              authed.should.equal(true);
-              client.destroy();
-              done();
-            });
           });
         });
       });
 
-      it('can authorize clients against rooms FAILING', function(done){
-        var client = new apiA.specHelper.connection();
-        client.auth = false;
-        apiA.chatRoom.add('newRoom', function(err){
-          apiA.chatRoom.setAuthenticationPattern('newRoom', 'auth', true, function(err){
-            apiA.chatRoom.authorize(client, 'newRoom', function(err, authed){
-              should.not.exist(err);
-              authed.should.equal(false);
-              client.destroy();
+      describe('chat middleware', function(){
+
+        var clientA, clientB;
+        var originalGenerateMessagePayload;
+
+        beforeEach(function(done){
+          originalGenerateMessagePayload = apiA.chatRoom.generateMessagePayload;
+          clientA = new apiA.specHelper.connection();
+          clientB = new apiA.specHelper.connection();
+
+          done();
+        });
+
+        afterEach(function(done){
+          apiA.chatRoom.middleware = {};
+          apiA.chatRoom.globalMiddleware = [];
+
+          clientA.destroy();
+          clientB.destroy();
+
+          apiA.chatRoom.generateMessagePayload = originalGenerateMessagePayload;
+          setTimeout(function(){
+            done();
+          }, 100);
+        });
+
+        it('generateMessagePayload can be overloaded', function(done){
+          apiA.chatRoom.generateMessagePayload = function(message){
+            return {
+              thing: 'stuff',
+              room: message.connection.room,
+              from: message.connection.id,
+            };
+          };
+
+          clientA.verbs('roomAdd','defaultRoom', function(err, data){
+            should.not.exist(err);
+          clientB.verbs('roomAdd','defaultRoom', function(err, data){
+            should.not.exist(err);
+          clientA.verbs('say', ['defaultRoom', 'hi there'], function(err, data){
+            setTimeout(function(){
+              var message = clientB.messages[(clientB.messages.length - 1)];
+              message.thing.should.equal('stuff');
+              should.not.exist(message.message);
               done();
-            });
+            }, 100);
+          });
+          });
           });
         });
-      });
 
-      it('server change auth for a room and all connections will be checked', function(done){
-        var clientA = new apiA.specHelper.connection();
-        var clientB = new apiA.specHelper.connection();
-        clientA.auth = true;
-        clientA._name = 'a';
-        clientB.auth = false;
-        clientB._name = 'b';
-        apiA.chatRoom.add('newRoom', function(err){
-          apiA.chatRoom.addMember(clientA.id, 'newRoom', function(err, didAdd){
-            apiA.chatRoom.addMember(clientB.id, 'newRoom', function(err, didAdd){
-              clientA.rooms[0].should.equal('newRoom');
-              clientB.rooms[0].should.equal('newRoom');
-              apiA.chatRoom.setAuthenticationPattern('newRoom', 'auth', true, function(err){
+        it('(join + leave) can add middleware to announce members', function(done){
+          apiA.chatRoom.addMiddleware({
+            name: 'add chat middleware',
+            join: function(connection, room, callback){
+              apiA.chatRoom.broadcast({}, room, 'I have entered the room: ' + connection.id, function(){
+                callback();
+              });
+            }
+          });
+
+          apiA.chatRoom.addMiddleware({
+            name: 'leave chat middleware',
+            leave: function(connection, room, callback){
+              apiA.chatRoom.broadcast({}, room, 'I have left the room: ' + connection.id, function(){
+                callback();
+              });
+            }
+          });
+
+          clientA.verbs('roomAdd','defaultRoom', function(err){
+            should.not.exist(err);
+            clientB.verbs('roomAdd','defaultRoom', function(err){
+              should.not.exist(err);
+              clientB.verbs('roomLeave','defaultRoom', function(err){
                 should.not.exist(err);
-                clientA.rooms[0].should.equal('newRoom');
-                clientA.rooms.length.should.equal(1);
-                clientB.rooms.length.should.equal(0);
-                clientA.destroy();
-                clientB.destroy();
-                done();
+
+                setTimeout(function(){
+                  clientA.messages.pop().message.should.equal('I have left the room: ' + clientB.id);
+                  clientA.messages.pop().message.should.equal('I have entered the room: ' + clientB.id);
+
+                  done();
+                }, 100);
+
               });
             });
           });
         });
+
+        it('(say) can modify message payloads', function(done){
+          apiA.chatRoom.addMiddleware({
+            name: 'chat middleware',
+            say: function(connection, room, messagePayload, callback){
+              if(messagePayload.from !== 0){
+                messagePayload.message = 'something else';
+              }
+              callback(null, messagePayload);
+            }
+          });
+
+          clientA.verbs('roomAdd','defaultRoom', function(err){
+            should.not.exist(err);
+          clientB.verbs('roomAdd','defaultRoom', function(err){
+            should.not.exist(err);
+          clientB.verbs('say', ['defaultRoom', 'something', 'awesome'], function(err){
+            should.not.exist(err);
+
+            setTimeout(function(){
+              var lastMessage = clientA.messages[(clientA.messages.length - 1)];
+              lastMessage.message.should.equal('something else');
+
+              done();
+            }, 100);
+
+          });
+          });
+          });
+        });
+
+        it('can add middleware in a particular order and will be passed modified messagePayloads', function(done){
+          apiA.chatRoom.addMiddleware({
+            name: 'chat middleware 1',
+            priority: 1000,
+            say: function(connection, room, messagePayload, callback){
+              messagePayload.message = 'MIDDLEWARE 1';
+              callback(null, messagePayload);
+            }
+          });
+
+          apiA.chatRoom.addMiddleware({
+            name: 'chat middleware 2',
+            priority: 2000,
+            say: function(connection, room, messagePayload, callback){
+              messagePayload.message = messagePayload.message + ' MIDDLEWARE 2';
+              callback(null, messagePayload);
+            }
+          });
+
+          clientA.verbs('roomAdd','defaultRoom', function(err){
+          clientB.verbs('roomAdd','defaultRoom', function(err){
+          clientB.verbs('say', ['defaultRoom', 'something', 'awesome'], function(err){
+
+            setTimeout(function(){
+              var lastMessage = clientA.messages[(clientA.messages.length - 1)];
+              lastMessage.message.should.equal('MIDDLEWARE 1 MIDDLEWARE 2');
+
+              done();
+            }, 100);
+
+          });
+          });
+          });
+        });
+
+        it('say middleware can block excecution', function(done){
+          apiA.chatRoom.addMiddleware({
+            name: 'chat middleware',
+            say: function(connection, room, messagePayload, callback){
+              callback(new Error('messages blocked'));
+            }
+          });
+
+          clientA.verbs('roomAdd','defaultRoom', function(){
+          clientB.verbs('roomAdd','defaultRoom', function(){
+          clientB.verbs('say', ['defaultRoom', 'something', 'awesome'], function(){
+
+            setTimeout(function(){
+              // welcome message is passed, no join/leave/or say messages
+              clientA.messages.length.should.equal(1);
+
+              done();
+            }, 100);
+
+          });
+          });
+          });
+        });
+
+        it('join middleware can block excecution', function(done){
+          apiA.chatRoom.addMiddleware({
+            name: 'chat middleware',
+            join: function(connection, room, callback){
+              callback(new Error('joining rooms blocked'));
+            }
+          });
+
+          clientA.verbs('roomAdd','defaultRoom', function(error, didJoin){
+            String(error).should.equal('Error: joining rooms blocked');
+            didJoin.should.equal(false);
+            clientA.rooms.length.should.equal(0);
+
+            done();
+          });
+        });
+
+        it('leave middleware can block excecution', function(done){
+          apiA.chatRoom.addMiddleware({
+            name: 'chat middleware',
+            leave: function(connection, room, callback){
+              callback(new Error('Hotel California'));
+            }
+          });
+
+          clientA.verbs('roomAdd','defaultRoom', function(error, didJoin){
+            should.not.exist(error);
+            didJoin.should.equal(true);
+            clientA.rooms.length.should.equal(1);
+            clientA.rooms[0].should.equal('defaultRoom');
+
+            clientA.verbs('roomLeave','defaultRoom', function(error, didLeave){
+              String(error).should.equal('Error: Hotel California');
+              didLeave.should.equal(false);
+              clientA.rooms.length.should.equal(1);
+
+              done();
+            });
+          });
+        });
+
       });
 
     });

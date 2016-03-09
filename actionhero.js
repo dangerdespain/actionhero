@@ -1,11 +1,47 @@
 ////////////////////////////////////////////////////////////////////////////
-// actionhero Framework in node.js
-// evan@evantahler.com
+// actionhero framework in node.js
+// http://www.actionherojs.com
 // https://github.com/evantahler/actionhero
 
-var fs = require('fs');
 var path = require('path');
 var async = require('async');
+
+// HELPERS ///
+
+var fatalError = function(api, errors, type){
+  if(errors && !(errors instanceof Array)){ errors = [errors]; }
+  if(errors){
+    api.log(['Error with initializer step: %s', type], 'emerg');
+    errors.forEach(function(err){
+      api.log(err.stack, 'emerg');
+    });
+    api.commands.stop.call(api, function(){
+      process.exit(1);
+    });
+  }
+};
+
+var sortNumber = function(a,b) {
+    return a - b;
+};
+
+var flattenOrderedInitialzer = function(collection){
+  var output = [];
+  var keys = [];
+  for(var key in collection){
+    keys.push(parseInt(key));
+  }
+  keys.sort(sortNumber);
+  keys.forEach(function(key){
+    collection[key].forEach(function(d){
+      output.push(d);
+    });
+  });
+
+  return output;
+};
+
+// ACTIONHERO //
 
 var actionhero = function(){
   var self = this;
@@ -19,6 +55,8 @@ var actionhero = function(){
 
 actionhero.prototype.initialize = function(params, callback){
   var self = this;
+  if(this._self){ self = this._self; }
+
   self.api._self = self;
   self.api.commands = {
     initialize: self.initialize,
@@ -39,223 +77,240 @@ actionhero.prototype.initialize = function(params, callback){
   if(!callback && typeof params === 'function'){
     callback = params; params = {};
   }
-  if(params === null){ params = {} }
+  if(params === null){ params = {}; }
   self.startingParams = params;
   self.api._startingParams = self.startingParams;
 
-  // run the initializers
-  var orderedInitializers = {};
-
-  [
-    'utils',
-    'configLoader',
-    'id',
-    'pids',
-    'logger',
-    'exceptions',
-    'stats',
-    'redis',
-    'cache',
-    'connections',
-    'actions',
-    'documentation',
-    'actionProcessor',
-    'params',
-    'staticFile',
-    'chatRoom',
-    'resque',
-    'tasks',
-    'routes',
-    'genericServer',
-    'servers',
-    'specHelper'
-  ].forEach(function(initializer){
-    var file = __dirname + '/initializers/' + initializer + '.js';
-    delete require.cache[require.resolve(file)];
-    self.initializers[initializer] = require(file)[initializer];
-    orderedInitializers[initializer] = function(next){
-      self.initializers[initializer](self.api, next);
-      self.api.watchFileAndAct(file, function(){
-        self.api.log('\r\n\r\n*** rebooting due to initializer change ('+file+') ***\r\n\r\n', 'info');
-        self.api.commands.restart.call(self.api._self);
-      });
-    };
-  });
-
-  orderedInitializers._projectInitializers = function(next){
-
-    var projectInitializers = {};
-  
-    self.api.config.general.paths.initializer.forEach(function(initPath){
-      if(path.resolve(initPath) !== path.resolve(__dirname + '/initializers')){
-        var localInitializerPath = path.resolve(initPath);
-        if( fs.existsSync(localInitializerPath) ){
-          var fileSet = fs.readdirSync(localInitializerPath).sort();
-          fileSet.forEach(function(f){
-            var file = path.resolve(initPath + '/' + f);
-            if(file[0] !== '.'){
-              var initializer = f.split('.')[0];
-              var fileParts = file.split('.');
-              var ext = fileParts[(fileParts.length - 1)];
-              if(ext === 'js'){
-                if(require.cache[require.resolve(file)] !== null){
-                  delete require.cache[require.resolve(file)];
-                }
-                self.initializers[initializer] = require(file)[initializer];
-                projectInitializers[initializer] = function(next){
-                  self.api.log('running custom initializer: ' + initializer, 'info');
-                  self.initializers[initializer](self.api, next);
-                  self.api.watchFileAndAct(file, function(){
-                    self.api.log('\r\n\r\n*** rebooting due to initializer change (' + file + ') ***\r\n\r\n', 'info');
-                    self.api.commands.restart.call(self.api._self);
-                  });
-                };
-              }
-            }
-          });
-        }else{
-          self.api.log('local initializer path not found: ' + localInitializerPath, 'alert');
-        }
-      }
-    })
-
-    projectInitializers._complete = function(){
-      process.nextTick(function(){ next(); });
-    }
-
-    async.series(projectInitializers);
-  }
-
-  orderedInitializers._complete = function(){
-    self.api.initialized = true;
-    callback(null, self.api);
+  self.api.initializerDefaults = {
+    load:  1000,
+    start: 1000,
+    stop:  1000
   };
 
-  async.series(orderedInitializers);
+  var loadInitializerRankings  = {};
+  var startInitializerRankings = {};
+  var stopInitializerRankings  = {};
+
+  self.configInitializers = [];
+  self.loadInitializers   = [];
+  self.startInitializers  = [];
+  self.stopInitializers   = [];
+
+  // we need to load the config first
+  [
+    path.resolve( __dirname + '/initializers/' + 'utils.js'  ),
+    path.resolve( __dirname + '/initializers/' + 'config.js' ),
+  ].forEach(function(file){
+    var filename = file.replace(/^.*[\\\/]/, '');
+    var initializer = filename.split('.')[0];
+    delete require.cache[require.resolve(file)];
+    self.initializers[initializer] = require(file);
+    self.configInitializers.push(function(next){
+      self.initializers[initializer].initialize(self.api, next);
+    });
+  });
+
+  self.configInitializers.push( function(){
+    var customInitializers = [];
+    self.api.config.general.paths.initializer.forEach(function(startPath) {
+      customInitializers = customInitializers.concat(self.api.utils.recursiveDirectoryGlob(startPath));
+    });
+    // load all other initializers
+    self.api.utils.arrayUniqueify(
+      self.api.utils.recursiveDirectoryGlob(__dirname + path.sep + 'initializers')
+      .sort()
+      .concat(
+        customInitializers
+        .sort()
+      )
+    ).forEach(function(f) {
+      var file = path.normalize(f);
+      var initializer = path.basename(f).split('.')[0];
+      var fileParts = file.split('.');
+      var ext = fileParts[(fileParts.length - 1)];
+      if(ext === 'js'){
+        delete require.cache[require.resolve(file)];
+        self.initializers[initializer] = require(file);
+
+        var loadFunction = function(next){
+          self.api.watchFileAndAct(file, function(){
+            self.api.log(['*** Rebooting due to initializer change (%s) ***', file], 'info');
+            self.api.commands.restart.call(self.api._self);
+          });
+
+          if(typeof self.initializers[initializer].initialize === 'function'){
+            if(typeof self.api.log === 'function'){ self.api.log(['Loading initializer: %s', initializer], 'debug', file); }
+            self.initializers[initializer].initialize(self.api, function(err){
+              try{ self.api.log(['Loaded initializer: %s', initializer], 'debug', file); }catch(e){ }
+              next(err);
+            });
+          }else{
+            next();
+          }
+        };
+
+        var startFunction = function(next){
+          if(typeof self.initializers[initializer].start === 'function'){
+            if(typeof self.api.log === 'function'){ self.api.log(['Starting initializer: %s', initializer], 'debug', file); }
+            self.initializers[initializer].start(self.api, function(err){
+              self.api.log(['Started initializer: %s', initializer], 'debug', file);
+              next(err);
+            });
+          }else{
+            next();
+          }
+        };
+
+        var stopFunction = function(next){
+          if(typeof self.initializers[initializer].stop === 'function'){
+            if(typeof self.api.log === 'function'){ self.api.log(['Stopping initializer: %s', initializer], 'debug', file); }
+            self.initializers[initializer].stop(self.api, function(err){
+              self.api.log(['Stopped initializer: %s', initializer], 'debug', file);
+              next(err);
+            });
+          }else{
+            next();
+          }
+        };
+
+        if(self.initializers[initializer].loadPriority === undefined){
+          self.initializers[initializer].loadPriority = self.api.initializerDefaults.load;
+        }
+        if(self.initializers[initializer].startPriority === undefined){
+          self.initializers[initializer].startPriority = self.api.initializerDefaults.start;
+        }
+        if(self.initializers[initializer].stopPriority === undefined){
+          self.initializers[initializer].stopPriority = self.api.initializerDefaults.stop;
+        }
+
+        if( loadInitializerRankings[ self.initializers[initializer].loadPriority ] === undefined ){
+          loadInitializerRankings[ self.initializers[initializer].loadPriority ] = [];
+        }
+        if( startInitializerRankings[ self.initializers[initializer].startPriority ] === undefined ){
+          startInitializerRankings[ self.initializers[initializer].startPriority ] = [];
+        }
+        if( stopInitializerRankings[ self.initializers[initializer].stopPriority ] === undefined ){
+          stopInitializerRankings[ self.initializers[initializer].stopPriority ] = [];
+        }
+
+        if(self.initializers[initializer].loadPriority > 0){
+          loadInitializerRankings[  self.initializers[initializer].loadPriority  ].push( loadFunction );
+        }
+
+        if(self.initializers[initializer].startPriority > 0){
+          startInitializerRankings[ self.initializers[initializer].startPriority ].push( startFunction );
+        }
+
+        if(self.initializers[initializer].stopPriority > 0){
+          stopInitializerRankings[  self.initializers[initializer].stopPriority  ].push( stopFunction );
+        }
+      }
+    });
+
+    // flatten all the ordered initializer methods
+    self.loadInitializers  = flattenOrderedInitialzer(loadInitializerRankings);
+    self.startInitializers = flattenOrderedInitialzer(startInitializerRankings);
+    self.stopInitializers  = flattenOrderedInitialzer(stopInitializerRankings);
+
+    self.loadInitializers.push( function(){
+      process.nextTick(function(){
+        self.api.initialized = true;
+        callback(null, self.api);
+      });
+    } );
+
+    async.series(self.loadInitializers, function(errors){ fatalError(self.api, errors, 'initialize'); });
+  } );
+
+  async.series(self.configInitializers, function(errors){ fatalError(self.api, errors, 'config'); });
 };
 
 actionhero.prototype.start = function(params, callback){
   var self = this;
+  if(this._self){ self = this._self; }
 
   if(!callback && typeof params === 'function'){
     callback = params; params = {};
   }
 
-  var start = function(){
+  var _start = function(){
     self.api.running = true;
-    self._starters = [];
-    for(var i in self.api){
-      if(typeof self.api[i]._start === 'function'){
-        self._starters.push(i);
-      }
+
+    if(self.startInitializers[(self.startInitializers.length -1)].name === 'finalStartInitializer'){
+      self.startInitializers.pop();
     }
 
-    var started = 0;
-    var successMessage = '*** Server Started @ ' + self.api.utils.sqlDateTime() + ' ***';
-    if(self._starters.length === 0){
+    self.startInitializers.push(function finalStartInitializer(){
       self.api.bootTime = new Date().getTime();
-      self.api.log('server ID: ' + self.api.id, 'notice');
-      self.api.log(successMessage, 'notice');
-      if(callback !== null){ callback(null, self.api); }
-    } else {
-      self._starters.forEach(function(starter){
-        started++;
-        self.api[starter]._start(self.api, function(){
-          process.nextTick(function(){
-            self.api.log(' > start: ' + starter,'debug');
-            started--;
-            if(started === 0){
-              self.api.bootTime = new Date().getTime();
-              self.api.log('server ID: ' + self.api.id, 'notice');
-              self.api.log(successMessage, 'notice');
-              if(callback !== null){ callback(null, self.api); }
-            }
-          });
-        });
-      });
-    }
-  }
+      self.api.log(['*** Server Started ***'], 'notice');
+      callback(null, self.api);
+    });
+
+    async.series(self.startInitializers, function(errors){ fatalError(self.api, errors, 'start'); });
+  };
 
   if(self.api.initialized === true){
-    start()
+    _start();
   } else {
     self.initialize(params, function(){
-      start();
-    })
+      _start();
+    });
   }
-}
+};
 
 actionhero.prototype.stop = function(callback){
   var self = this;
+  if(this._self){ self = this._self; }
+
   if(self.api.running === true){
     self.api.shuttingDown = true;
     self.api.running = false;
     self.api.initialized = false;
-    self.api.log('Shutting down open servers and stopping task processing', 'alert');
 
-    var orderedStopper = {};
-    [
-      'tasks',
-      'resque',
-      'webServer',
-      'webSocketServer',
-      'socketServer'
-    ].forEach(function(stopper){
-      if(self.api[stopper] && typeof self.api[stopper]._stop === 'function'){
-        (function(name) {
-          orderedStopper[name] = function(next){
-            self.api.log(' > stop: ' + name, 'debug');
-            self.api[name]._stop(self.api, next);
-          };
-        })(stopper);
-      }
-    });
+    self.api.log('Shutting down open servers and stopping task processing...', 'alert');
 
-    for(var i in self.api){
-      if(typeof self.api[i]._stop === 'function' && !orderedStopper[i]){
-        (function(name) {
-          orderedStopper[name] = function(next){
-            self.api.log(' > stop: ' + name, 'debug');
-            self.api[name]._stop(self.api, next);
-          };
-        })(i);
-      }
+    if(self.stopInitializers[(self.stopInitializers.length -1)].name === 'finalStopInitializer'){
+      self.stopInitializers.pop();
     }
 
-    orderedStopper._complete = function(){
-      setTimeout(function(){
-        self.api.unWatchAllFiles();
-        self.api.pids.clearPidFile();
-        self.api.log('The actionhero has been stopped', 'alert');
-        self.api.log('***', 'debug');
-        delete self.api.shuttingDown;
-        if(typeof callback === 'function'){ callback(null, self.api) }
-      }, 500);
-    };
+    self.stopInitializers.push(function finalStopInitializer(){
+      self.api.unWatchAllFiles();
+      self.api.pids.clearPidFile();
+      self.api.log('The actionhero has been stopped', 'alert');
+      self.api.log('***', 'debug');
+      delete self.api.shuttingDown;
+      process.nextTick(function(){
+        if(typeof callback === 'function'){ callback(null, self.api); }
+      });
+    });
 
-    async.series(orderedStopper);
+    async.series(self.stopInitializers, function(errors){ fatalError(self.api, errors, 'stop'); });
   } else if(self.api.shuttingDown === true){
     // double sigterm; ignore it
   } else {
-    self.api.log('Cannot shut down (not running any servers)', 'info');
-    if(typeof callback === 'function'){ callback(null, self.api) }
+    self.api.log('Cannot shut down actionhero, not running', 'error');
+    if(typeof callback === 'function'){ callback(null, self.api); }
   }
 };
 
 actionhero.prototype.restart = function(callback){
   var self = this;
+  if(this._self){ self = this._self; }
 
   if(self.api.running === true){
-    self.stop(function(){
-      self.start(self.startingParams, function(err, api){
-        api.log('actionhero restarted', 'notice');
-        if(typeof callback === 'function'){ callback(null, self.api) }
+    self.stop(function(err){
+      if(err){ self.api.log(err, 'error'); }
+      self.start(self.startingParams, function(err){
+        if(err){ self.api.log(err, 'error'); }
+        self.api.log('*** actionhero restarted ***', 'info');
+        if(typeof callback === 'function'){ callback(null, self.api); }
       });
     });
   } else {
-    self.start(self.startingParams, function(err, api){
-      api.log('actionhero restarted', 'notice');
-      if(typeof callback === 'function'){ callback(null, self.api) }
+    self.start(self.startingParams, function(err){
+      if(err){ self.api.log(err, 'error'); }
+      self.api.log('*** actionhero restarted ***', 'info');
+      if(typeof callback === 'function'){ callback(null, self.api); }
     });
   }
 };

@@ -6,14 +6,15 @@ exports.action = {
   matchExtensionMimeType: false,
   version:                1.0,
   toDocument:             true,
+  middleware:             [],
 
-  inputs: {
-    required: [],
-    optional: []
-  },
+  inputs: {},
 
-  run: function(api, connection, next){
+  run: function(api, data, next){
+    var error = null;
+
     // your logic here
-    next(connection, true);
+    
+    next(error);
   }
 };

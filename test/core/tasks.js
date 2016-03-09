@@ -12,6 +12,9 @@ describe('Core: Tasks', function(){
     actionhero.start(function(err, a){
       api = a;
 
+      api.resque.multiWorker.options.minTaskProcessors = 1;
+      api.resque.multiWorker.options.maxTaskProcessors = 1;
+
       api.tasks.tasks.regularTask = {
         name: 'regular',
         description: 'task: ' + this.name,
@@ -23,7 +26,7 @@ describe('Core: Tasks', function(){
           taskOutput.push(params.word);
           next();
         }
-      }
+      };
 
       api.tasks.tasks.periodicTask = {
         name: 'periodicTask',
@@ -36,13 +39,13 @@ describe('Core: Tasks', function(){
           taskOutput.push('periodicTask');
           next();
         }
-      }
+      };
 
       api.tasks.jobs.regularTask  = api.tasks.jobWrapper('regularTask');
       api.tasks.jobs.periodicTask = api.tasks.jobWrapper('periodicTask');
 
       done();
-    })
+    });
   });
 
   after(function(done){
@@ -50,6 +53,10 @@ describe('Core: Tasks', function(){
     delete api.tasks.tasks.periodicTask;
     delete api.tasks.jobs.regularTask;
     delete api.tasks.jobs.periodicTask;
+
+    api.resque.multiWorker.options.minTaskProcessors = 0;
+    api.resque.multiWorker.options.maxTaskProcessors = 0;
+
     actionhero.stop(function(){
       done();
     });
@@ -64,11 +71,11 @@ describe('Core: Tasks', function(){
 
   afterEach(function(done){
     api.resque.stopScheduler(function(){
-      api.resque.stopWorkers(function(){
+      api.resque.stopMultiWorker(function(){
         done();
       });
     });
-  })
+  });
 
   it('a bad task definition causes an exception' , function(done){
     var badTask = {
@@ -107,7 +114,7 @@ describe('Core: Tasks', function(){
     api.specHelper.runTask('regularTask', {word: 'theWord'}, function(){
       taskOutput[0].should.equal('theWord');
       done();
-    })
+    });
   });
 
   it('no delayed tasks should be scheduled', function(done){
@@ -161,8 +168,35 @@ describe('Core: Tasks', function(){
         should.not.exist(err);
         timestamps.length.should.equal(1);
         var completeTime = Math.floor(time / 1000);
-        Number(timestamps[0]).should.be.within(completeTime, completeTime + 2)
+        Number(timestamps[0]).should.be.within(completeTime, completeTime + 2);
         done();
+      });
+    });
+  });
+
+  it('can see enqueued timestmps & see jobs within those timestamps (single + batch)', function(done){
+    var time = new Date().getTime() + 1000;
+    var roundedTime = Math.round(time/1000) * 1000;
+    api.tasks.enqueueAt(time, 'regularTask', {word: 'first'}, function(err){
+      api.tasks.timestamps(function(err, timestamps){
+        should.not.exist(err);
+        timestamps.length.should.equal(1);
+        timestamps[0].should.equal(roundedTime);
+
+      api.tasks.delayedAt(roundedTime, function(err, tasks){
+        should.not.exist(err);
+        tasks.length.should.equal(1);
+        tasks[0].class.should.equal('regularTask');
+      });
+
+      api.tasks.allDelayed(function(err, allTasks){
+        should.not.exist(err);
+        Object.keys(allTasks).length.should.equal(1);
+        Object.keys(allTasks)[0].should.equal(String(roundedTime));
+        allTasks[roundedTime][0].class.should.equal('regularTask');
+        done();
+      });
+
       });
     });
   });
@@ -219,7 +253,7 @@ describe('Core: Tasks', function(){
       api.tasks.enqueue('regularTask', {word: 'first'}, function(err){
         should.not.exist(err);
         api.config.tasks.queues = ['*'];
-        api.resque.startWorkers(function(){
+        api.resque.multiWorker.start(function(){
           setTimeout(function(){
             taskOutput[0].should.equal('first');
             done();
@@ -234,7 +268,7 @@ describe('Core: Tasks', function(){
         api.config.tasks.queues = ['*'];
         api.config.tasks.scheduler = true;
         api.resque.startScheduler(function(){
-          api.resque.startWorkers(function(){
+          api.resque.multiWorker.start(function(){
             setTimeout(function(){
               taskOutput[0].should.equal('delayed');
               done();
@@ -249,7 +283,7 @@ describe('Core: Tasks', function(){
         api.config.tasks.queues = ['*'];
         api.config.tasks.scheduler = true;
         api.resque.startScheduler(function(){
-          api.resque.startWorkers(function(){
+          api.resque.multiWorker.start(function(){
             setTimeout(function(){
               taskOutput[0].should.equal('periodicTask');
               taskOutput[1].should.equal('periodicTask');
@@ -263,20 +297,21 @@ describe('Core: Tasks', function(){
     });
 
     it('popping an unknown job will throw an error, but not crash the server', function(done){
-      api.resque.queue.enqueue(queue, 'someCrazyTask', {}, function(){
-        api.config.tasks.queues = ['*'];
-        api.resque.startWorkers(function(){
-          var listener = function(queue, job, f){
-            queue.should.equal(queue);
-            job.class.should.equal('someCrazyTask')
-            job.queue.should.equal('testQueue')
-            String(f).should.equal('Error: No job defined for class \'someCrazyTask\'');
-            api.resque.workers[0].removeListener('failure', listener);
-            done();
-          }
+      api.config.tasks.queues = ['*'];
 
-          api.resque.workers[0].on('failure', listener);
-        });
+      var listener = function(workerId, queue, job, f){
+        queue.should.equal(queue);
+        job.class.should.equal('someCrazyTask');
+        job.queue.should.equal('testQueue');
+        String(f).should.equal('Error: No job defined for class \'someCrazyTask\'');
+        api.resque.multiWorker.removeListener('failure', listener);
+        done();
+      };
+
+      api.resque.multiWorker.on('failure', listener);
+
+      api.resque.queue.enqueue(queue, 'someCrazyTask', {}, function(){
+        api.resque.multiWorker.start();
       });
     });
 

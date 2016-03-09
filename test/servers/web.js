@@ -55,6 +55,111 @@ describe('Server: Web', function(){
     });
   });
 
+  describe('will properly destroy connections', function(){
+
+    it('works for the API', function(done){
+      api.utils.hashLength( api.connections.connections ).should.equal(0);
+      request.get(url + '/api/sleepTest', function(){
+        api.utils.hashLength( api.connections.connections ).should.equal(0);
+        setTimeout(done, 100);
+      });
+
+      setTimeout(function(){
+        api.utils.hashLength( api.connections.connections ).should.equal(1);
+      }, 100);
+    });
+
+    it('works for files', function(done){
+      api.utils.hashLength( api.connections.connections ).should.equal(0);
+      request.get(url + '/simple.html', function(){
+        setTimeout(function(){
+          api.utils.hashLength( api.connections.connections ).should.equal(0);
+          done();
+        }, 100);
+      });
+    });
+  });
+
+  describe('errors', function(){
+
+    before(function(done){
+      api.actions.versions.stringErrorTestAction = [1]
+      api.actions.actions.stringErrorTestAction = {
+        '1': {
+          name: 'stringErrorTestAction',
+          description: 'stringErrorTestAction',
+          version: 1,
+          run:function(api, data, next){
+            next('broken');
+          }
+        }
+      }
+
+      api.actions.versions.errorErrorTestAction = [1]
+      api.actions.actions.errorErrorTestAction = {
+        '1': {
+          name: 'errorErrorTestAction',
+          description: 'errorErrorTestAction',
+          version: 1,
+          run:function(api, data, next){
+            next(new Error('broken'));
+          }
+        }
+      }
+
+      api.actions.versions.complexErrorTestAction = [1]
+      api.actions.actions.complexErrorTestAction = {
+        '1': {
+          name: 'complexErrorTestAction',
+          description: 'complexErrorTestAction',
+          version: 1,
+          run:function(api, data, next){
+            next({ error: 'broken', reason: 'stuff'});
+          }
+        }
+      }
+
+      api.routes.loadRoutes();
+      done();
+    });
+
+    after(function(done){
+      delete api.actions.actions.stringErrorTestAction;
+      delete api.actions.versions.stringErrorTestAction;
+      delete api.actions.actions.errorErrorTestAction;
+      delete api.actions.versions.errorErrorTestAction;
+      delete api.actions.actions.complexErrorTestAction;
+      delete api.actions.versions.complexErrorTestAction;
+      done();
+    });
+
+    it('errors can be error strings', function(done){
+      request.get(url + '/api/stringErrorTestAction/', function(err, response, body){
+        body = JSON.parse(body);
+        body.error.should.equal('broken')
+        done();
+      });
+    });
+
+    it('errors can be error objects and returned plainly', function(done){
+      request.get(url + '/api/errorErrorTestAction/', function(err, response, body){
+        body = JSON.parse(body);
+        body.error.should.equal('broken')
+        done();
+      });
+    });
+
+    it('errors can be complex JSON payloads', function(done){
+      request.get(url + '/api/complexErrorTestAction/', function(err, response, body){
+        body = JSON.parse(body);
+        body.error.error.should.equal('broken')
+        body.error.reason.should.equal('stuff')
+        done();
+      });
+    });
+
+  });
+
   describe('if disableParamScrubbing is set ', function () {
     var orig;
 
@@ -82,7 +187,7 @@ describe('Server: Web', function(){
   it('gibberish actions have the right response', function(done){
     request.get(url + '/api/IAMNOTANACTION', function(err, response, body){
       body = JSON.parse(body);
-      body.error.should.equal('Error: unknown action or invalid apiVersion')
+      body.error.should.equal('unknown action or invalid apiVersion')
       done();
     });
   });
@@ -152,11 +257,9 @@ describe('Server: Web', function(){
           name: 'paramTestAction',
           description: 'I return connection.rawConnection.params',
           version: 1,
-          inputs: { required: [], optional: [] },
-          outputExample: {},
-          run:function(api, connection, next){
-            connection.response = connection.rawConnection.params;
-            next(connection, true);
+          run:function(api, data, next){
+            data.response = data.connection.rawConnection.params;
+            next();
           }
         }
       }
@@ -218,15 +321,14 @@ describe('Server: Web', function(){
           name: 'headerTestAction',
           description: 'I am a test',
           version: 1,
-          inputs: { required: [], optional: [] },
           outputExample: {},
-          run:function(api, connection, next){
-            connection.rawConnection.responseHeaders.push(['thing', 'A']);
-            connection.rawConnection.responseHeaders.push(['thing', 'B']);
-            connection.rawConnection.responseHeaders.push(['thing', 'C']);
-            connection.rawConnection.responseHeaders.push(['Set-Cookie', 'value_1=1']);
-            connection.rawConnection.responseHeaders.push(['Set-Cookie', 'value_2=2']);
-            next(connection, true);
+          run:function(api, data, next){
+            data.connection.rawConnection.responseHeaders.push(['thing', 'A']);
+            data.connection.rawConnection.responseHeaders.push(['thing', 'B']);
+            data.connection.rawConnection.responseHeaders.push(['thing', 'C']);
+            data.connection.rawConnection.responseHeaders.push(['Set-Cookie', 'value_1=1']);
+            data.connection.rawConnection.responseHeaders.push(['Set-Cookie', 'value_2=2']);
+            next();
           }
         }
       }
@@ -273,7 +375,7 @@ describe('Server: Web', function(){
 
     it('should respond to TRACE with parsed params received', function(done){
       request({method: 'trace', url: url + '/api/x', form: {key: 'someKey', value: 'someValue'}}, function(err, response, body){
-        body = JSON.parse(body);  
+        body = JSON.parse(body);
         response.statusCode.should.eql(200);
         body.receivedParams.key.should.equal('someKey');
         body.receivedParams.value.should.equal('someValue');
@@ -331,36 +433,24 @@ describe('Server: Web', function(){
 
     before(function(done){
       api.config.servers.web.returnErrorCodes = true;
-      
+
       api.actions.versions.statusTestAction = [1]
       api.actions.actions.statusTestAction = {
         '1': {
           name: 'statusTestAction',
           description: 'I am a test',
-          inputs: { required: ['key'], optional: [] },
-          outputExample: {},
-          run:function(api, connection, next){
-            if(connection.params.key !== 'value'){
-              connection.error = 'key != value';
-              connection.rawConnection.responseHttpCode = 402;
+          inputs: {
+            key: {required:true}
+          },
+          run:function(api, data, next){
+            var error;
+            if(data.params.key !== 'value'){
+              error = 'key != value';
+              data.connection.rawConnection.responseHttpCode = 402;
             } else {
-              connection.response.good = true;
+              data.response.good = true;
             }
-            next(connection, true);
-          }
-        }
-      }
-
-      api.actions.versions.brokenAction = [1]
-      api.actions.actions.brokenAction = {
-        '1': {
-          name: 'brokenAction',
-          description: 'I am broken',
-          inputs: { required: [], optional: [] },
-          outputExample: {},
-          run:function(api, connection, next){
-            BREAK; // undefiend
-            next(connection, true);
+            next(error);
           }
         }
       }
@@ -373,8 +463,6 @@ describe('Server: Web', function(){
       api.config.servers.web.returnErrorCodes = false;
       delete api.actions.versions.statusTestAction;
       delete api.actions.actions.statusTestAction;
-      delete api.actions.versions.brokenAction;
-      delete api.actions.actions.brokenAction;
       done();
     });
 
@@ -392,19 +480,6 @@ describe('Server: Web', function(){
         response.statusCode.should.eql(422);
         done();
       });
-    });
-
-    it('server errors should return a 500', function(done){
-      if(api.config.general.actionDomains === true){
-        request.post(url + '/api/brokenAction', function(err, response, body){
-          body = JSON.parse(body);
-          response.statusCode.should.eql(500);
-          done();
-        });
-      }else{
-        console.log("skipping broken action test; api.config.general.actionDomains != true")
-        done();
-      }
     });
 
     it('status codes can be set for errors', function(done){
@@ -445,16 +520,13 @@ describe('Server: Web', function(){
             var action = body.documentation[actionName][version];
             action.name.should.be.a.String;
             action.description.should.be.a.String;
-            action.inputs.should.be.a.Object;
-            action.inputs.required.should.be.an.instanceOf(Array)
-            action.inputs.optional.should.be.an.instanceOf(Array)
-            action.outputExample.should.be.a.Object;
+            action.inputs.should.be.an.instanceOf(Object)
           }
         }
         done();
       });
     });
-    
+
   });
 
   describe('files', function(){
@@ -477,7 +549,7 @@ describe('Server: Web', function(){
     it('I should not see files outside of the public dir', function(done){
       request.get(url + '/public/../config.json', function(err, response){
         response.statusCode.should.equal(404);
-        response.body.should.equal( api.config.errors.fileNotFound() );
+        response.body.should.equal( 'That file is not found (../config.json)' );
         done();
       });
     });
@@ -503,17 +575,17 @@ describe('Server: Web', function(){
 
       before(function(done){
         fs.createReadStream(source).pipe(fs.createWriteStream('/tmp/testFile.html'));
-        api.config.general.paths.public.push('/tmp');
-        process.nextTick(function(){ 
-          done(); 
+        api.staticFile.searchLoactions.push('/tmp');
+        process.nextTick(function(){
+          done();
         });
       });
 
       after(function(done){
         fs.unlink('/tmp/testFile.html');
-        api.config.general.paths.public.pop();
-        process.nextTick(function(){ 
-          done(); 
+        api.staticFile.searchLoactions.pop();
+        process.nextTick(function(){
+          done();
         });
       });
 
@@ -577,7 +649,7 @@ describe('Server: Web', function(){
   });
 
   describe('routes', function(){
-    
+
     before(function(done){
       api.actions.versions.mimeTestAction = [1]
       api.actions.actions.mimeTestAction = {
@@ -585,25 +657,44 @@ describe('Server: Web', function(){
           name: 'mimeTestAction',
           description: 'I am a test',
           matchExtensionMimeType: true,
-          inputs: { required: ['key'], optional: [] },
+          inputs: {
+            key: { required:true },
+            path: { required:false },
+          },
           outputExample: {},
-          run:function(api, connection, next){
-            next(connection, true);
+          run:function(api, data, next){
+            next();
           }
         }
       }
 
-      api.actions.versions.login = [1]
+      api.actions.versions.login = [1, 2]
       api.actions.actions.login = {
         '1': {
           name: 'login',
           description: 'login',
           matchExtensionMimeType: true,
-          inputs: { required: ['userID'], optional: [] },
+          inputs: {
+            user_id: {required:true}
+          },
           outputExample: {},
-          run:function(api, connection, next){
-            connection.response.userID = connection.params.userID;
-            next(connection, true);
+          run:function(api, data, next){
+            data.response.user_id = data.params.user_id;
+            next();
+          }
+        },
+
+        '2': {
+          name: 'login',
+          description: 'login',
+          matchExtensionMimeType: true,
+          inputs: {
+            userID: {required:true}
+          },
+          outputExample: {},
+          run:function(api, data, next){
+            data.response.userID = data.params.userID;
+            next();
           }
         }
       }
@@ -619,10 +710,12 @@ describe('Server: Web', function(){
           { path: '/c/:key/:value', action: 'cacheTest' },
           { path: '/mimeTestAction/:key', action: 'mimeTestAction' },
           { path: '/thing', action: 'thing' },
-          { path: '/thing/stuff', action: 'thingStuff' }
+          { path: '/thing/stuff', action: 'thingStuff' },
+          { path: '/old_login', action: 'login', apiVersion: '1' },
+          { path: '/a/wild/:key/:path(^.*$)', action: 'mimeTestAction', apiVersion: '1', matchTrailingPathParts: true }
         ],
         post: [
-          { path: '/login/:userID(^\\d{3}$)', action: 'login' }
+          { path: '/login/:userID(^(\\d{3}|admin)$)', action: 'login' }
         ]
       });
 
@@ -650,11 +743,11 @@ describe('Server: Web', function(){
       });
       done();
     })
-  
+
     it('unknown actions are still unknown', function(done){
       request.get(url + '/api/a_crazy_action', function(err, response, body){
         body = JSON.parse(body);
-        body.error.should.equal('Error: unknown action or invalid apiVersion')
+        body.error.should.equal('unknown action or invalid apiVersion')
         done();
       });
     });
@@ -671,6 +764,15 @@ describe('Server: Web', function(){
       request.get(url + '/api/user/123?action=someFakeAction', function(err, response, body){
         body = JSON.parse(body);
         body.requesterInformation.receivedParams.action.should.equal('user')
+        done();
+      });
+    });
+
+    it('Routes should recognize apiVersion as default param', function(done){
+      request.get(url + '/api/old_login?user_id=7', function(err, response, body){
+        body = JSON.parse(body);
+        body.user_id.should.equal('7');
+        body.requesterInformation.receivedParams.action.should.equal('login')
         done();
       });
     });
@@ -735,7 +837,7 @@ describe('Server: Web', function(){
       request.get(url + '/api/thing', function(err, response, body){
         body = JSON.parse(body);
         body.requesterInformation.receivedParams.action.should.equal('thing')
-        
+
         request.get(url + '/api/thing/stuff', function(err, response, body){
           body = JSON.parse(body);
           body.requesterInformation.receivedParams.action.should.equal('thingStuff')
@@ -749,7 +851,13 @@ describe('Server: Web', function(){
         body = JSON.parse(body);
         body.requesterInformation.receivedParams.action.should.equal('login');
         body.requesterInformation.receivedParams.userID.should.equal('123');
-        done();
+
+        request.post(url + '/api/login/admin', function(err, response, body){
+          body = JSON.parse(body);
+          body.requesterInformation.receivedParams.action.should.equal('login');
+          body.requesterInformation.receivedParams.userID.should.equal('admin');
+          done();
+        });
       });
     });
 
@@ -765,7 +873,7 @@ describe('Server: Web', function(){
     it('regexp match failures will be rejected', function(done){
       request.post(url + '/api/login/1234', function(err, response, body){
         body = JSON.parse(body);
-        body.error.should.equal('Error: unknown action or invalid apiVersion');
+        body.error.should.equal('unknown action or invalid apiVersion');
         should.not.exist(body.requesterInformation.receivedParams.userID);
         done();
       });
@@ -784,13 +892,62 @@ describe('Server: Web', function(){
         request.get(url + '/api/mimeTestAction', function(err, response, body){
           body = JSON.parse(body);
           response.headers['content-type'].should.equal('application/json; charset=utf-8');
-          body.error.should.equal('Error: key is a required parameter for this action');
+          body.error.should.equal('key is a required parameter for this action');
+          done();
+        });
+      });
+
+      it('works with with matchTrailingPathParts', function(done){
+        request.get(url + '/api/a/wild/theKey/and/some/more/path', function(err, response, body){
+          body = JSON.parse(body);
+          body.requesterInformation.receivedParams.action.should.equal('mimeTestAction');
+          body.requesterInformation.receivedParams.path.should.equal('and/some/more/path');
+          body.requesterInformation.receivedParams.key.should.equal('theKey');
           done();
         });
       });
 
     });
 
+    describe('spaces in URL with public files', function() {
+
+      var source = __dirname + '/../../public/logo/sky.jpg'
+
+      before(function(done){
+        fs.createReadStream(source).pipe(fs.createWriteStream('/tmp/sky with space.jpg'));
+        api.staticFile.searchLoactions.push('/tmp');
+        process.nextTick(function(){
+          done();
+        });
+      });
+
+      after(function(done){
+        fs.unlink('/tmp/sky with space.jpg');
+        api.staticFile.searchLoactions.pop();
+        process.nextTick(function(){
+          done();
+        });
+      });
+
+      it('will decode %20 or plus sign to a space so that file system can read', function (done) {
+        request.get(url + '/sky%20with%20space.jpg', function (err, response) {
+          response.statusCode.should.equal(200)
+          response.body.should.be.an.instanceOf(Object);
+          response.headers['content-type'].should.equal('image/jpeg');
+          done();
+        });
+      });
+
+      it('will capture bad encoding in URL and return NOT FOUND', function (done) {
+        request.get(url + '/sky%20%%%%%%%%%%with+space.jpg', function (err, response) {
+          response.statusCode.should.equal(404)
+          response.body.should.be.an.instanceOf(String);
+          response.body.should.startWith('That file is not found');
+          done();
+        });
+      });
+
+    })
   });
 
 });

@@ -1,17 +1,18 @@
-var %%name%% = function(api, options, next){
+var initialize = function(api, options, next){
 
   //////////
   // INIT //
   //////////
 
-  var type = '%%name%%'
+  var type = '%%name%%';
+
   var attributes = {
     canChat: true,
     logConnections: true,
     logExits: true,
     sendWelcomeMessage: true,
     verbs: []
-  }
+  };
 
   var server = new api.genericServer(type, options, attributes);
 
@@ -19,17 +20,17 @@ var %%name%% = function(api, options, next){
   // REQUIRED METHODS //
   //////////////////////
 
-  server._start = function(next){
+  server.start = function(next){
     next();
-  }
+  };
 
-  server._stop = function(next){
+  server.stop = function(next){
     next();
-  }
+  };
 
   server.sendMessage = function(connection, message, messageCount){
 
-  }
+  };
 
   server.sendFile = function(connection, error, fileStream, mime, length){
 
@@ -47,7 +48,7 @@ var %%name%% = function(api, options, next){
 
   });
 
-  server.on('actionComplete', function(connection, toRender, messageCount){
+  server.on('actionComplete', function(data){
 
   });
 
@@ -56,6 +57,6 @@ var %%name%% = function(api, options, next){
   /////////////
 
   next(server);
-}
+};
 
-exports.%%name%% = %%name%%;
+exports.initialize = initialize;
